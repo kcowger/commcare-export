@@ -6,8 +6,7 @@ Each commit should do exactly one thing so that its diff is easy to
 review. If a task involves multiple changes, split them into separate
 commits. For example, whenever code is moved and changed, or a file is
 renamed and changed, do the move or the rename in one commit and make
-the changes in another. If files need to be reformatted with ruff, do
-that and commit before making code changes.
+the changes in another.
 
 ## Commands
 

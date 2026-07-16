@@ -8,7 +8,7 @@ env:
   DB_PASSWORD: Password123
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     services:
       mssql:
         image: mcr.microsoft.com/mssql/server:2017-latest
@@ -84,7 +84,7 @@ jobs:
   finish:
     needs: test
     if: ${{ always() }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: coverallsapp/github-action@v2
         with:

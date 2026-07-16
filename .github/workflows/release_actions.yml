@@ -6,7 +6,7 @@ on:
 jobs:
   generate_linux_bin:
     name: Generate Linux binary as release asset
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
         with:

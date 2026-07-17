@@ -59,4 +59,4 @@ uv.lock
 *.whl
 
 # Default output filename
-reports.zip
+/reports.zip

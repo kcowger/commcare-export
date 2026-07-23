@@ -133,34 +133,22 @@ For maintainers only.
 
 1. **Create a tag** for the release:
    ```shell
-   git tag -a "X.YY.0" -m "Release X.YY.0"
-   git push --tags
+   git tag "X.Y.Z"
    ```
 
 2. **Create the distribution**:
    ```shell
    uv build
    ```
-   Ensure that the archives in `dist/` have the correct version number
-   (matching the tag name).
+   Ensure that version number of the archives in `dist/` matches the tag.
 
-3. **Upload to PyPI**:
+3. **Update `CHANGELOG.md`** and open a pull request.
+
+4. When the PR is merged, **push the tag**:
    ```shell
-   uv publish
+   git push --tags
    ```
 
-4. **Verify the upload** at https://pypi.python.org/pypi/commcare-export
-
-5. **Create a release on GitHub** at
-   https://github.com/dimagi/commcare-export/releases
-
-   Once the release is published, a GitHub workflow compiles executables
-   of the DET for Linux and Windows, adding them to the release as
-   assets.
-
-For Linux-based users: If you download and use the executable file, make
-sure the file has the executable permission enabled:
-
-```shell
-chmod +x commcare-export
-```
+Pushing the tag will trigger the GitHub workflow to publish to TestPyPI,
+then PyPI, and then create a new GitHub release using the content you
+added in `CHANGELOG.md`.

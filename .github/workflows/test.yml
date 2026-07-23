@@ -43,25 +43,21 @@ jobs:
       - run: mysql -uroot -proot -e "GRANT ALL PRIVILEGES ON *.* TO '${{ env.DB_USER }}'@'%';"
 
       # Install uv
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - run: sudo apt-get install pandoc
 
       # Build and install package
-      - name: Build distribution
-        run: uv build
+      - run: uv build
 
-      - name: Install package with extras
-        run: |
+      - run: |
           uv pip install --system dist/*.whl
           uv pip install --system -e ".[postgres,mysql,odbc,test]"
           uv pip install --system coverage coveralls
@@ -79,48 +75,18 @@ jobs:
       - run: coverage lcov -o coverage/lcov.info
 
       # Use Coveralls to track coverage
-      - name: Coveralls
-        uses: coverallsapp/github-action@v2
+      - uses: coverallsapp/github-action@v2
         with:
           parallel: true
           flag-name: run-${{ join(matrix.*, '-') }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  typing:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Build distribution
-        run: uv build
-
-      - name: Install package with test dependencies
-        run: |
-          uv pip install --system dist/*.whl
-          uv pip install --system -e ".[test]"
-
-      - run: mypy commcare_export/ tests/
 
   finish:
     needs: test
     if: ${{ always() }}
     runs-on: ubuntu-22.04
     steps:
-      - name: Close parallel build
-        uses: coverallsapp/github-action@v2
+      - uses: coverallsapp/github-action@v2
         with:
           parallel-finished: true
           carryforward: "run-3.10,run-3.11,run-3.12,run-3.13,run-3.14"

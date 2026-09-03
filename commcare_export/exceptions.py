@@ -1,7 +1,9 @@
 class DataExportException(Exception):
     @property
     def message(self):
-        raise NotImplementedError
+        # subclasses either pass a finished message to __init__ or
+        # override this property
+        return str(self)
 
 
 class LongFieldsException(DataExportException):
@@ -50,6 +52,39 @@ class MissingQueryFileException(DataExportException):
     @property
     def message(self):
         return f'Query file not found: {self.query_file}'
+
+
+def _truncated(text, limit=100):
+    # exported values can carry sensitive data and forged log lines, so
+    # neutralize control characters and cap what exceptions carry into
+    # error messages and logs
+    text = ''.join(
+        char if char.isprintable() else ' ' for char in str(text)
+    )
+    return text if len(text) <= limit else text[:limit] + '...'
+
+
+class DeltaWriteException(DataExportException):
+
+    def __init__(self, table, reason):
+        super().__init__(
+            f'Error writing table "{_truncated(table, 50)}": '
+            f'{_truncated(reason)}'
+        )
+
+
+class UnwritableValueException(DataExportException):
+
+    def __init__(self, table, column, value, error, row_id=None):
+        for_row = (
+            f' for row id {_truncated(repr(row_id), 50)}'
+            if row_id is not None else ''
+        )
+        super().__init__(
+            f'Cannot write value {_truncated(repr(value), 50)} to column '
+            f'"{_truncated(column, 50)}" of table "{_truncated(table, 50)}"'
+            f'{for_row}: {_truncated(error)}'
+        )
 
 
 class ReservedTableNameException(DataExportException):

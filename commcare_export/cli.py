@@ -446,6 +446,7 @@ def _get_checkpoint_manager(args):
         )
     else:
         checkpoint_manager = get_checkpoint_manager(args)
+        checkpoint_manager.defer_checkpoints = args.output_format == 'delta'
         checkpoint_manager.create_checkpoint_table()
         return checkpoint_manager
 
@@ -573,6 +574,9 @@ def main_with_args(args):
     )
 
     exit_status = evaluate_query(env, query)
+
+    if checkpoint_manager and exit_status == EXIT_STATUS_SUCCESS:
+        checkpoint_manager.write_deferred_checkpoints()
 
     if args.output_format == 'json':
         print(

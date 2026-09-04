@@ -95,6 +95,10 @@ one commit to a table compacts that table's files when it finishes.
 Long-lived destinations that receive small scheduled runs still
 benefit from a periodic `OPTIMIZE` on your platform.
 
+Delta runs record their checkpoint only after the whole export
+succeeds. If a run fails partway, nothing is checkpointed; the next
+run re-fetches the same window and the merge reapplies it.
+
 ```shell
 commcare-export \
     --query my-query.xlsx \

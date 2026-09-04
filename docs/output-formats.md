@@ -89,10 +89,11 @@ not the destination, so a checkpoint database shared across
 destinations makes a second destination resume where the first left off
 and skip its older records.
 
-Rows are committed to each Delta table in chunks of up to 1,000, so a
-large first export produces many small files; compact the produced
-tables periodically with your platform's table maintenance commands
-(for example `OPTIMIZE`).
+A first export appends rows in chunks of up to 100,000; later runs
+merge updates in chunks of the same size. A run that makes more than
+one commit to a table compacts that table's files when it finishes.
+Long-lived destinations that receive small scheduled runs still
+benefit from a periodic `OPTIMIZE` on your platform.
 
 ```shell
 commcare-export \

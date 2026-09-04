@@ -2,6 +2,7 @@ import datetime
 
 import pytest
 
+import commcare_export.writers as writers
 from commcare_export.data_types import DATA_TYPES_TO_SQLALCHEMY_TYPES
 from commcare_export.exceptions import (
     DeltaWriteException,
@@ -212,6 +213,85 @@ def test_id_only_tables_can_be_written_twice(tmp_path):
     write_table(tmp_path, ['id'], [['a']])
     write_table(tmp_path, ['id'], [['a'], ['b']])
     assert read_table(tmp_path) == [{'id': 'a'}, {'id': 'b'}]
+
+
+def test_first_exports_append_in_chunks_and_compact(tmp_path, monkeypatch):
+    monkeypatch.setattr(writers, 'DELTA_BATCH_SIZE', 3)
+    write_table(
+        tmp_path,
+        ['id', 'name'],
+        [[f'r{i}', f'n{i}'] for i in range(8)],
+    )
+    table = deltalake.DeltaTable(f'{tmp_path}/forms')
+    assert table.to_pyarrow_table().num_rows == 8
+    assert len(table.file_uris()) == 1
+    operations = [entry['operation'] for entry in table.history()]
+    assert operations == ['OPTIMIZE', 'WRITE', 'WRITE', 'WRITE']
+
+
+def test_single_chunk_exports_make_one_commit(tmp_path):
+    write_table(tmp_path, ['id', 'name'], [['a', 'Ada'], ['b', 'Bo']])
+    assert deltalake.DeltaTable(f'{tmp_path}/forms').version() == 0
+
+
+def test_compaction_failures_only_warn(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(writers, 'DELTA_BATCH_SIZE', 3)
+    monkeypatch.setattr(
+        deltalake.table.TableOptimizer,
+        'compact',
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(
+            Exception('compaction exploded')
+        ),
+    )
+    write_table(
+        tmp_path,
+        ['id', 'name'],
+        [[f'r{i}', f'n{i}'] for i in range(8)],
+    )
+    assert read_table(tmp_path) == [
+        {'id': f'r{i}', 'name': f'n{i}'} for i in range(8)
+    ]
+    assert any(
+        'Failed to compact' in message for message in caplog.messages
+    )
+
+
+def test_duplicate_ids_across_chunks_keep_upsert_semantics(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(writers, 'DELTA_BATCH_SIZE', 2)
+    write_table(
+        tmp_path,
+        ['id', 'name', 'age'],
+        [
+            ['a', 'Ada', '30'],
+            ['b', 'Bo', '9'],
+            ['a', None, '31'],
+            ['c', 'Cy', '1'],
+            ['a', 'Adele', None],
+        ],
+    )
+    assert read_table(tmp_path) == [
+        {'id': 'a', 'name': 'Adele', 'age': '31'},
+        {'id': 'b', 'name': 'Bo', 'age': '9'},
+        {'id': 'c', 'name': 'Cy', 'age': '1'},
+    ]
+
+
+def test_existing_tables_merge_in_chunks(tmp_path, monkeypatch):
+    write_table(tmp_path, ['id', 'name'], [['a', 'Ada'], ['b', 'Bo']])
+    monkeypatch.setattr(writers, 'DELTA_BATCH_SIZE', 2)
+    write_table(
+        tmp_path,
+        ['id', 'name'],
+        [['a', None], ['c', 'Cy'], ['d', 'Dee']],
+    )
+    assert read_table(tmp_path) == [
+        {'id': 'a', 'name': 'Ada'},
+        {'id': 'b', 'name': 'Bo'},
+        {'id': 'c', 'name': 'Cy'},
+        {'id': 'd', 'name': 'Dee'},
+    ]
 
 
 def test_error_messages_neutralize_control_characters(tmp_path):

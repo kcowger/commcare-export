@@ -27,6 +27,7 @@ from commcare_export.data_types import (
 from commcare_export.exceptions import (
     DeltaWriteException,
     UnwritableValueException,
+    truncated,
 )
 from commcare_export.specs import TableSpec
 
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 MAX_COLUMN_SIZE = 2000
 SCHEMA_CHECK_ROWS = 10
 BATCH_SIZE = 1000
+# Delta wants few large commits where SQL wants small batches: each
+# Delta commit rewrites whole files, so committing every BATCH_SIZE
+# rows would make a backfill quadratic
+DELTA_BATCH_SIZE = 100_000
 
 
 def ensure_text(v, convert_none=False):
@@ -805,7 +810,11 @@ class DeltaTableWriter(TableWriter):
         data_type_dict['id'] = None
         id_index = headings.index('id')
         schema = self._get_schema(headings, data_type_dict)
-        for batch in _batched(table_spec.rows, BATCH_SIZE):
+        table_existed = self._get_table(table_uri) is not None
+        appended_ids: set[str] = set()
+        held_back: dict[str, dict[str, Any]] = {}
+        commits = 0
+        for batch in _batched(table_spec.rows, DELTA_BATCH_SIZE):
             rows_by_id: dict[str, dict[str, Any]] = {}
             skipped = 0
             for row in batch:
@@ -822,15 +831,7 @@ class DeltaTableWriter(TableWriter):
                     skipped += 1
                     continue
                 if row_id in rows_by_id:
-                    # Delta merge fails when duplicate source ids match
-                    # one target row, so collapse them the way repeated
-                    # upserts would: last value wins, nulls never
-                    # overwrite
-                    rows_by_id[row_id].update({
-                        column: value
-                        for column, value in row_dict.items()
-                        if value is not None
-                    })
+                    _absorb_row(rows_by_id[row_id], row_dict)
                 else:
                     rows_by_id[row_id] = row_dict
             if skipped:
@@ -839,16 +840,74 @@ class DeltaTableWriter(TableWriter):
                     f"'{table_spec.name}': {skipped}. They will not be "
                     "exported by later incremental runs."
                 )
-            try:
-                self._write_batch(
-                    table_uri, list(rows_by_id.values()), schema
-                )
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except BaseException as err:
-                # delta-rs raises plain Exceptions as well as
-                # DeltaErrors, and its Rust panics subclass BaseException
-                raise DeltaWriteException(table_spec.name, err)
+            if table_existed:
+                if rows_by_id:
+                    self._guarded(
+                        table_spec.name, self._merge,
+                        table_uri, list(rows_by_id.values()), schema,
+                    )
+                    commits += 1
+            else:
+                # first export: append rows and hold back the rare ids
+                # already appended by an earlier chunk, applying those
+                # in one merge at the end, so a backfill never merges
+                # against data this same run just wrote. appended_ids
+                # holds every id of the export in memory, roughly 100MB
+                # per million rows
+                to_append = []
+                for row_id, row_dict in rows_by_id.items():
+                    if row_id in appended_ids:
+                        if row_id in held_back:
+                            _absorb_row(held_back[row_id], row_dict)
+                        else:
+                            held_back[row_id] = row_dict
+                    else:
+                        to_append.append(row_dict)
+                        appended_ids.add(row_id)
+                if to_append:
+                    self._guarded(
+                        table_spec.name, self._append,
+                        table_uri, to_append, schema,
+                    )
+                    commits += 1
+                if len(held_back) >= DELTA_BATCH_SIZE:
+                    self._guarded(
+                        table_spec.name, self._merge,
+                        table_uri, list(held_back.values()), schema,
+                    )
+                    held_back.clear()
+                    commits += 1
+        if held_back:
+            self._guarded(
+                table_spec.name, self._merge,
+                table_uri, list(held_back.values()), schema,
+            )
+            commits += 1
+        if commits > 1:
+            self._compact(table_uri, table_spec.name)
+
+    def _guarded(self, table_name, write, *args):
+        try:
+            return write(*args)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as err:
+            # delta-rs raises plain Exceptions as well as DeltaErrors,
+            # and its Rust panics subclass BaseException
+            raise DeltaWriteException(table_name, err)
+
+    def _compact(self, table_uri, table_name):
+        try:
+            self._get_table(table_uri).optimize.compact()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as err:
+            # the exported data is already committed, so a failed
+            # compaction only costs read performance
+            logger.warning(
+                f"Failed to compact table '{truncated(table_name, 50)}': "
+                f'{truncated(err)}'
+            )
 
     def _convert(self, table_name, column, value, data_type, row_id):
         try:
@@ -890,7 +949,11 @@ class DeltaTableWriter(TableWriter):
             logger.warning(f"Found unknown data type '{data_type}'")
         return self.arrow_types.get(data_type, self.pyarrow.string())
 
-    def _write_batch(self, table_uri, row_dicts, schema):
+    def _append(self, table_uri, row_dicts, schema):
+        source = self.pyarrow.Table.from_pylist(row_dicts, schema=schema)
+        self.deltalake.write_deltalake(table_uri, source, mode='append')
+
+    def _merge(self, table_uri, row_dicts, schema):
         if not row_dicts:
             return
         source = self.pyarrow.Table.from_pylist(row_dicts, schema=schema)
@@ -899,14 +962,17 @@ class DeltaTableWriter(TableWriter):
             self.deltalake.write_deltalake(table_uri, source)
             return
         existing = {field.name for field in table.schema().fields}
+        new_columns = [
+            name for name in source.schema.names if name not in existing
+        ]
         # a column merge_schema is about to add cannot be coalesced
         # against, because t.<column> resolves against the pre-merge
         # schema
         updates = {
             _quoted(name): (
-                f'coalesce(s.{_quoted(name)}, t.{_quoted(name)})'
-                if name in existing
-                else f's.{_quoted(name)}'
+                f's.{_quoted(name)}'
+                if name in new_columns
+                else f'coalesce(s.{_quoted(name)}, t.{_quoted(name)})'
             )
             for name in source.schema.names
             if name != 'id'
@@ -916,7 +982,7 @@ class DeltaTableWriter(TableWriter):
             predicate='t."id" = s."id"',
             source_alias='s',
             target_alias='t',
-            merge_schema=True,
+            merge_schema=bool(new_columns),
         )
         if updates:
             merger = merger.when_matched_update(updates)
@@ -927,6 +993,17 @@ class DeltaTableWriter(TableWriter):
             return self.deltalake.DeltaTable(table_uri)
         except self.deltalake.exceptions.TableNotFoundError:
             return None
+
+
+def _absorb_row(target, row_dict):
+    # Delta merge fails when duplicate source ids match one target row,
+    # so collapse duplicates the way repeated upserts would: last value
+    # wins, nulls never overwrite
+    target.update({
+        column: value
+        for column, value in row_dict.items()
+        if value is not None
+    })
 
 
 def _quoted(name):

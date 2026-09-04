@@ -692,7 +692,8 @@ def checkpoint_manager(pg_db_params):
 
 
 def _pull_data(writer, checkpoint_manager, query, since, until, batch_size=10):
-    if 'HQ_USERNAME' not in os.environ or 'HQ_API_KEY' not in os.environ:
+    # secrets are empty strings on pull requests from forks
+    if not os.environ.get('HQ_USERNAME') or not os.environ.get('HQ_API_KEY'):
         pytest.skip(
             'HQ_USERNAME and HQ_API_KEY are required for integration tests.'
         )

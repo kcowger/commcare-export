@@ -99,6 +99,18 @@ Delta runs record their checkpoint only after the whole export
 succeeds. If a run fails partway, nothing is checkpointed; the next
 run re-fetches the same window and the merge reapplies it.
 
+Delta keeps old file versions when data changes, so tables that are
+updated on a schedule accumulate historical files. Reclaim that space
+periodically with your platform's `VACUUM` command; the usual default
+keeps seven days of history, which preserves time travel over recent
+versions.
+
+Run one export at a time per destination. Concurrent writers to the
+same table are safe on Azure, Google Cloud Storage, and AWS S3, where
+delta-rs commits with atomic conditional writes; S3-compatible stores
+that lack conditional-write support are not safe for concurrent
+writers.
+
 ```shell
 commcare-export \
     --query my-query.xlsx \
